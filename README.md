@@ -52,10 +52,10 @@ That's it. The script handles all interactive prompts, runs all 15 tests, escala
 
 The script validates both the file size and the `-n` / `-m` parameters on startup and exits with an error if any requirement is not met.
 
-File type `f` is required to be specified
+**`-f` is required** — the script will not run without it:
 
-- `-f 0` : ASCII  — file contains a sequence of '0' and '1' characters\n"
-- `-f 1` : Binary — file is raw binary (each byte = 8 bits)\n\n"
+- `-f 0` : ASCII  — file contains a sequence of '0' and '1' characters
+- `-f 1` : Binary — file is raw binary (each byte = 8 bits)
 
 ---
 
@@ -321,7 +321,7 @@ python3 nist_analysis.py -n <seq_len> -m <bitstreams> -f <filetype> -i <input_fi
 |---|---|---|
 | `-n` | `1000000` | Sequence length in bits (minimum 1,000,000) |
 | `-m` | `100` | Number of bitstreams (minimum 100) |
-| `f`  | *(required)* | 0 - ASCII OR 1 - Binary |
+| `-f` | *(required)* | `0` = ASCII, `1` = Binary |
 | `-i` | *(required)* | Path to raw binary input file |
 | `--assess-path` | *(auto-detected)* | Path to the NIST STS `assess` binary |
 | `-o / --output` | *(auto-generated)* | Output Markdown report path |
@@ -349,6 +349,30 @@ python3 nist_analysis.py -n 1000000 -m 100 -f 1  -i rng_4gb.bin \
 python3 nist_analysis.py -n 1000000 -m 100 -f 1  -i rng_4gb.bin \
   -o /reports/nist_run_2026.md
 ```
+
+---
+
+## Appendix B Validation (`--test` mode)
+
+`nist_analysis.py` includes a `--test` flag for validating correctness against the official NIST SP 800-22 Appendix B reference data.
+
+When `--test` is specified:
+- The `m >= 100` restriction is bypassed, allowing `m=1`
+- After the assessment completes, per-stream p-values are printed to stdout and the script exits (skipping escalation and the Markdown report)
+
+**Running a single file manually:**
+```bash
+python3 nist_analysis.py -f 0 -n 1000000 -m 1 -i data.pi --test
+```
+
+**Running the full Appendix B validation suite** (all 5 reference files):
+```bash
+python3 test_nist_appendix_b.py \
+    --assess-path ./sts-2.1.2/assess \
+    --data-dir    ./sts-2.1.2/data/
+```
+
+`test_nist_appendix_b.py` runs `nist_analysis.py` against each of the 5 NIST reference files (`data.pi`, `data.e`, `data.sha1`, `data.sqrt2`, `data.sqrt3`) and compares the returned p-values to the expected values from Appendix B (tolerance ±0.0001). A `PASS` on all comparisons confirms that `nist_analysis.py` is computing correct results.
 
 ---
 
@@ -431,6 +455,7 @@ Total runtime depends on how many tests need escalation. If all 15 pass at basel
 ```
 RNGLABS/
 ├── nist_analysis.py                     # Main script
+├── test_nist_appendix_b.py              # Appendix B validation test
 ├── README_nist_analysis.md              # This file
 ├── NIST_MultiSubResult_Policy_Provisions.md   # RNG Labs assessment standard
 │
