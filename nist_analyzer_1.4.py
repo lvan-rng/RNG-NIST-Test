@@ -306,6 +306,8 @@ def check_sub_proportion(num_passing, num_total, alpha=ALPHA):
 def validate_inputs(args):
     """Validate all input parameters. Exit on error."""
     errors = []
+    warnings = []
+    fmt = getattr(args, 'f', 1)   # default binary if attribute missing
 
     if args.n < MIN_SEQUENCE_LENGTH:
         errors.append(
@@ -313,38 +315,62 @@ def validate_inputs(args):
             f"NIST requires n >= {MIN_SEQUENCE_LENGTH:,} for full-suite execution."
         )
 
-    if args.m < MIN_BITSTREAMS:
-        errors.append(
-            f"Number of bitstreams m={args.m} is below minimum {MIN_BITSTREAMS}. "
-            f"RNG Labs requires m >= {MIN_BITSTREAMS} for stable reporting."
-        )
+    if fmt == 1:
+        # Binary mode: enforce minimum bitstreams for statistically stable reporting
+        if args.m < MIN_BITSTREAMS:
+            errors.append(
+                f"Number of bitstreams m={args.m} is below minimum {MIN_BITSTREAMS}. "
+                f"RNG Labs requires m >= {MIN_BITSTREAMS} for stable reporting."
+            )
+    else:
+        # ASCII mode: m < 100 is allowed (e.g. m=1 for NIST Appendix B validation)
+        if args.m < 1:
+            errors.append("Number of bitstreams m must be at least 1.")
+        elif args.m < MIN_BITSTREAMS:
+            warnings.append(
+                f"m={args.m} is below the recommended minimum of {MIN_BITSTREAMS}. "
+                f"Statistical reporting is only meaningful for m >= {MIN_BITSTREAMS}. "
+                f"For NIST Appendix B reference validation, m=1 is intentional."
+            )
 
     if not os.path.isfile(args.i):
         errors.append(f"Input file not found: {args.i}")
     else:
         file_size = os.path.getsize(args.i)
         file_size_mb = file_size / (1024 * 1024)
-        if file_size < MIN_FILE_SIZE_BYTES:
-            errors.append(
-                f"Input file size {file_size_mb:.1f} MB is below minimum {MIN_FILE_SIZE_MB} MB. "
-                f"File: {args.i}"
-            )
+
+        if fmt == 1:
+            # Binary: each byte = 8 bits
+            if file_size < MIN_FILE_SIZE_BYTES:
+                errors.append(
+                    f"Input file size {file_size_mb:.1f} MB is below minimum {MIN_FILE_SIZE_MB} MB. "
+                    f"File: {args.i}"
+                )
+            total_bits_available = file_size * 8
+        else:
+            # ASCII: each byte = 1 bit (each character is '0' or '1')
+            total_bits_available = file_size
 
         total_bits_needed = args.n * args.m
-        total_bits_available = file_size * 8
         if total_bits_available < total_bits_needed:
             errors.append(
                 f"Input file has {total_bits_available:,} bits but "
                 f"n={args.n:,} x m={args.m} = {total_bits_needed:,} bits required."
             )
 
-        # Also check escalation capacity
-        escalation_bits = args.n * ESCALATION_M2
-        if total_bits_available < escalation_bits:
-            errors.append(
-                f"Input file has {total_bits_available:,} bits but escalation to m={ESCALATION_M2} "
-                f"requires n={args.n:,} x m={ESCALATION_M2} = {escalation_bits:,} bits."
-            )
+        # Escalation capacity check only applies to binary production runs
+        if fmt == 1:
+            escalation_bits = args.n * ESCALATION_M2
+            if total_bits_available < escalation_bits:
+                errors.append(
+                    f"Input file has {total_bits_available:,} bits but escalation to m={ESCALATION_M2} "
+                    f"requires n={args.n:,} x m={ESCALATION_M2} = {escalation_bits:,} bits."
+                )
+
+    if warnings:
+        print("\n  NOTICE:")
+        for w in warnings:
+            print(f"  ⚠  {w}")
 
     if errors:
         print("\n ERROR: Input validation failed\n")
@@ -433,7 +459,7 @@ def needs_fix_parameters(test_mask):
     return False
 
 
-def build_stdin_all_tests(input_file, m):
+def build_stdin_all_tests(input_file, m, fmt=1):
     """
     Build stdin for running all 15 tests.
 
@@ -443,7 +469,7 @@ def build_stdin_all_tests(input_file, m):
       1              <- all tests
       0              <- fixParameters: continue (always needed since all tests include parameterized)
       <m>            <- How many bitstreams?
-      1              <- [1] Binary format
+      <fmt>          <- [0] ASCII  or  [1] Binary (default: 1=Binary)
     """
     return "\n".join([
         "0",
@@ -451,11 +477,11 @@ def build_stdin_all_tests(input_file, m):
         "1",
         "0",
         str(m),
-        "1",
+        str(fmt),
     ]) + "\n"
 
 
-def build_stdin_targeted(input_file, m, test_mask):
+def build_stdin_targeted(input_file, m, test_mask, fmt=1):
     """
     Build stdin for running specific tests only (escalation re-runs).
 
@@ -466,7 +492,7 @@ def build_stdin_targeted(input_file, m, test_mask):
       <15 digits>    <- test selection mask
       [0]            <- fixParameters: continue (only if any parameterized test selected)
       <m>            <- How many bitstreams?
-      1              <- [1] Binary format
+      <fmt>          <- [0] ASCII  or  [1] Binary (default: 1=Binary)
     """
     lines = [
         "0",
@@ -478,7 +504,7 @@ def build_stdin_targeted(input_file, m, test_mask):
         lines.append("0")
     lines.extend([
         str(m),
-        "1",
+        str(fmt),
     ])
     return "\n".join(lines) + "\n"
 
@@ -488,23 +514,24 @@ def build_stdin_targeted(input_file, m, test_mask):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_assess(assess_path, input_file, n, m, test_mask=None, label="Baseline",
-               report_dir=None):
+               report_dir=None, fmt=1):
     """
     Run the official NIST STS assess tool by piping interactive prompts
     via stdin. Returns the assess working directory (real path, symlink resolved).
 
     test_mask: None for all tests, or "000000010000000" for targeted.
     report_dir: local directory to save run logs (optional).
+    fmt: 0=ASCII, 1=Binary (default: 1).
     """
     # Resolve symlinks to find the real sts-2.1.2 installation directory
     # (where templates/ and experiments/ directories live)
     assess_dir = get_assess_working_dir(assess_path)
 
     if test_mask is None:
-        stdin_input = build_stdin_all_tests(input_file, m)
+        stdin_input = build_stdin_all_tests(input_file, m, fmt=fmt)
         tests_desc = "all 15 tests"
     else:
-        stdin_input = build_stdin_targeted(input_file, m, test_mask)
+        stdin_input = build_stdin_targeted(input_file, m, test_mask, fmt=fmt)
         selected = [str(i + 1) for i, c in enumerate(test_mask) if c == '1']
         tests_desc = f"tests {','.join(selected)}"
 
@@ -657,6 +684,58 @@ def parse_report(assess_dir):
         })
 
     return rows
+
+
+def read_per_stream_pvalues(assess_dir):
+    """
+    Read per-stream test p-values from NIST STS individual test result files.
+
+    After assess completes, each test writes its computed p-value(s) to a
+    per-test results.txt file at:
+        <assess_dir>/experiments/AlgorithmTesting/<TestDir>/results.txt
+
+    These per-stream p-values are what NIST SP 800-22 Appendix B documents.
+    They differ from the P-VALUE column in finalAnalysisReport.txt, which
+    holds the chi-squared uniformity value across m streams (degenerate for
+    m=1).  For m=1 validation against Appendix B, always use this function.
+
+    Parsing patterns (common to all 15 NIST STS tests):
+      "p_value = X.XXXXXX"           most tests
+      "p_value1 = X.XXXXXX"          Serial test (first p-value)
+      "p_value2 = X.XXXXXX"          Serial test (second p-value)
+      "x = N   p_value = X.XXXXXX"   RandomExcursions / RandomExcursionsVariant
+
+    Returns a dict keyed by test directory name (from TEST_DIRS):
+      { "Frequency": [0.578011], "CumulativeSums": [0.628308, 0.663369], ... }
+
+    Tests with no results.txt (e.g. RandomExcursions with insufficient cycles)
+    are absent from the returned dict.
+    """
+    result = {}
+    exp_base = os.path.join(assess_dir, "experiments", "AlgorithmTesting")
+
+    for test_dir in TEST_DIRS[1:]:   # skip placeholder at index 0
+        results_path = os.path.join(exp_base, test_dir, "results.txt")
+        if not os.path.isfile(results_path):
+            continue
+
+        pvalues = []
+        with open(results_path, "r") as f:
+            for line in f:
+                m = re.search(
+                    r'p_value\d*\s*=\s*([0-9.]+(?:e[+-]?\d+)?)',
+                    line, re.IGNORECASE
+                )
+                if m:
+                    try:
+                        pvalues.append(float(m.group(1)))
+                    except ValueError:
+                        pass
+
+        if pvalues:
+            result[test_dir] = pvalues
+
+    return result
 
 
 def get_sub_label(test_idx, sub_idx):
@@ -1600,15 +1679,30 @@ Report output:
     parser.add_argument("-n", type=int, default=1_000_000,
                         help="Sequence length in bits (default: 1000000, minimum: 1000000)")
     parser.add_argument("-m", type=int, default=100,
-                        help="Number of bitstreams (default: 100, minimum: 100)")
+                        help="Number of bitstreams (default: 100, minimum: 100 for binary; "
+                             "1 allowed for ASCII validation)")
+    parser.add_argument("-f", type=int, default=None, choices=[0, 1],
+                        help="Input file format (REQUIRED): "
+                             "0=ASCII (sequence of '0'/'1' characters), "
+                             "1=Binary (each byte = 8 bits)")
     parser.add_argument("-i", type=str, required=True,
-                        help="Input binary file path")
+                        help="Input file path")
     parser.add_argument("--assess-path", type=str, default=None,
                         help="Path to the NIST STS assess binary")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Output Markdown report path (default: nist_report_<timestamp>.md)")
 
     args = parser.parse_args()
+
+    # Require -f to be explicitly specified
+    if args.f is None:
+        parser.error(
+            "argument -f is required.\n\n"
+            "  Please specify the input file format:\n"
+            "    -f 0   ASCII  — file contains a sequence of '0' and '1' characters\n"
+            "    -f 1   Binary — file is raw binary (each byte = 8 bits)\n\n"
+            "  Example: nist_analysis.py -f 1 -n 1000000 -m 100 -i rng_data.bin"
+        )
 
     # Banner
     print()
@@ -1627,11 +1721,19 @@ Report output:
 
     # File info
     file_size = os.path.getsize(args.i)
+    fmt_label = "0 — ASCII (sequence of '0'/'1' characters)" if args.f == 0 else "1 — Binary (8 bits per byte)"
+    if args.f == 1:
+        bits_available = file_size * 8
+        size_display = f"{file_size / (1024**3):.2f} GB ({file_size:,} bytes)"
+    else:
+        bits_available = file_size
+        size_display = f"{file_size / (1024**2):.2f} MB ({file_size:,} bytes)"
     print(f"  Input file    : {args.i}")
-    print(f"  File size     : {file_size / (1024**3):.2f} GB ({file_size:,} bytes)")
+    print(f"  File size     : {size_display}")
+    print(f"  Format        : {fmt_label}")
     print(f"  n             : {args.n:,}")
     print(f"  m             : {args.m}")
-    print(f"  Total bits    : {args.n * args.m:,}")
+    print(f"  Total bits    : {args.n * args.m:,}  (available: {bits_available:,})")
 
     # ── Create local report directory ──
     input_basename = os.path.splitext(os.path.basename(args.i))[0]
@@ -1644,7 +1746,7 @@ Report output:
     print_box("Phase 1: Baseline Run (m={})".format(args.m))
 
     assess_dir = run_assess(assess_path, args.i, args.n, args.m, None,
-                            f"Baseline m={args.m}", report_dir)
+                            f"Baseline m={args.m}", report_dir, fmt=args.f)
 
     print("\n  Parsing baseline results ...")
     baseline_rows = parse_report(assess_dir)
@@ -1678,103 +1780,113 @@ Report output:
             else:
                 print(f"    [{ti}] {tname}")
 
-        # ── Phase 2: Escalation ──
-        print()
-        print_box("Phase 2: Escalation (m={}, m={})".format(ESCALATION_M1, ESCALATION_M2))
+        if args.f == 0:
+            # ASCII / reference-validation mode — escalation is not meaningful
+            # (m=1 means no statistical basis for multi-level re-runs).
+            print()
+            print("  [ASCII validation mode] Escalation skipped (not applicable for m=1 reference runs).")
+            escalation_map = {}
+            m200_results = None
+            m300_results = None
+        else:
+            # ── Phase 2: Escalation ──
+            print()
+            print_box("Phase 2: Escalation (m={}, m={})".format(ESCALATION_M1, ESCALATION_M2))
 
-        m200_results, m300_results = run_escalation(
-            assess_path, args.i, args.n, failing, baseline_results, report_dir
-        )
+            m200_results, m300_results = run_escalation(
+                assess_path, args.i, args.n, failing, baseline_results, report_dir
+            )
 
-        # ── Phase 3: Apply decision matrix ──
-        print()
-        print_box("Phase 3: Decision Matrix")
-        print()
+        if args.f != 0:
+            # ── Phase 3: Apply decision matrix ──
+            print()
+            print_box("Phase 3: Decision Matrix")
+            print()
 
-        for test_idx, sub_indices in sorted(failing.items()):
-            if test_idx in MULTI_PROPORTION_TESTS:
-                # ── Multi-proportion test (8, 12, 13) ────────────────────────
-                # sub_indices == [0] (sentinel meaning whole test failed)
-                # Decision is based on the test-level overall_pass, not a
-                # specific sub-row, because we re-ran the full test.
-                sub_idx = 0
+            for test_idx, sub_indices in sorted(failing.items()):
+                if test_idx in MULTI_PROPORTION_TESTS:
+                    # ── Multi-proportion test (8, 12, 13) ────────────────────────
+                    # sub_indices == [0] (sentinel meaning whole test failed)
+                    # Decision is based on the test-level overall_pass, not a
+                    # specific sub-row, because we re-ran the full test.
+                    sub_idx = 0
 
-                # Build synthetic row-like dicts with just overall_pass set
-                # so apply_decision_matrix can work uniformly.
-                def _td_to_pseudo_row(td):
-                    if td is None or test_idx not in td:
-                        return None
-                    return {"overall_pass": td[test_idx]["overall_pass"],
-                            "p_value": None, "proportion": "",
-                            "pass_95": td[test_idx]["overall_pass_95"],
-                            "pass_99": td[test_idx]["overall_pass_99"],
-                            "label": ""}
+                    # Build synthetic row-like dicts with just overall_pass set
+                    # so apply_decision_matrix can work uniformly.
+                    def _td_to_pseudo_row(td):
+                        if td is None or test_idx not in td:
+                            return None
+                        return {"overall_pass": td[test_idx]["overall_pass"],
+                                "p_value": None, "proportion": "",
+                                "pass_95": td[test_idx]["overall_pass_95"],
+                                "pass_99": td[test_idx]["overall_pass_99"],
+                                "label": ""}
 
-                b_pseudo   = {"overall_pass": False, "p_value": None,
-                              "proportion": "", "pass_95": "FAIL",
-                              "pass_99": "FAIL", "label": ""}
-                m200_pseudo = _td_to_pseudo_row(m200_results)
-                m300_pseudo = _td_to_pseudo_row(m300_results)
+                    b_pseudo   = {"overall_pass": False, "p_value": None,
+                                  "proportion": "", "pass_95": "FAIL",
+                                  "pass_99": "FAIL", "label": ""}
+                    m200_pseudo = _td_to_pseudo_row(m200_results)
+                    m300_pseudo = _td_to_pseudo_row(m300_results)
 
-                verdict = apply_decision_matrix(b_pseudo, m200_pseudo, m300_pseudo)
+                    verdict = apply_decision_matrix(b_pseudo, m200_pseudo, m300_pseudo)
 
-                test_name = TEST_NAMES[test_idx]
-                desc = f"[{test_idx}] {test_name}"
-
-                b_summary   = baseline_results[test_idx].get("sub_proportion_summary", "FAIL")
-                m2_summary  = m200_results[test_idx].get("sub_proportion_summary", "?") \
-                              if m200_results and test_idx in m200_results else "?"
-                m3_summary  = m300_results[test_idx].get("sub_proportion_summary", "?") \
-                              if m300_results and test_idx in m300_results else "?"
-                m2_status   = "PASS" if m200_pseudo and m200_pseudo["overall_pass"] else "FAIL"
-                m3_status   = "PASS" if m300_pseudo and m300_pseudo["overall_pass"] else "FAIL"
-
-                print(f"  {desc}  [sub-proportion check]")
-                print(f"    m={args.m}: FAIL ({b_summary})  |  "
-                      f"m={ESCALATION_M1}: {m2_status} ({m2_summary})  |  "
-                      f"m={ESCALATION_M2}: {m3_status} ({m3_summary})  ->  {verdict}")
-
-                escalation_map[(test_idx, sub_idx)] = {
-                    "baseline":   b_pseudo,
-                    "baseline_m": args.m,
-                    "m200":       m200_pseudo,
-                    "m300":       m300_pseudo,
-                    "verdict":    verdict,
-                    "is_multi_proportion": True,
-                    "baseline_summary":    b_summary,
-                    "m200_summary":        m2_summary,
-                    "m300_summary":        m3_summary,
-                }
-            else:
-                # ── Standard per-sub-row escalation ──────────────────────────
-                for sub_idx in sub_indices:
-                    b_row   = lookup_row(baseline_results, test_idx, sub_idx)
-                    m200_row = lookup_row(m200_results, test_idx, sub_idx)
-                    m300_row = lookup_row(m300_results, test_idx, sub_idx)
-
-                    verdict = apply_decision_matrix(b_row, m200_row, m300_row)
-
-                    label = b_row.get("label", "") if b_row else ""
                     test_name = TEST_NAMES[test_idx]
                     desc = f"[{test_idx}] {test_name}"
-                    if label:
-                        desc += f" ({label})"
 
-                    b_status = "FAIL"
-                    m2_status = "PASS" if (m200_row and m200_row["overall_pass"]) else "FAIL"
-                    m3_status = "PASS" if (m300_row and m300_row["overall_pass"]) else "FAIL"
+                    b_summary   = baseline_results[test_idx].get("sub_proportion_summary", "FAIL")
+                    m2_summary  = m200_results[test_idx].get("sub_proportion_summary", "?") \
+                                  if m200_results and test_idx in m200_results else "?"
+                    m3_summary  = m300_results[test_idx].get("sub_proportion_summary", "?") \
+                                  if m300_results and test_idx in m300_results else "?"
+                    m2_status   = "PASS" if m200_pseudo and m200_pseudo["overall_pass"] else "FAIL"
+                    m3_status   = "PASS" if m300_pseudo and m300_pseudo["overall_pass"] else "FAIL"
 
-                    print(f"  {desc}")
-                    print(f"    m={args.m}: {b_status}  |  m={ESCALATION_M1}: {m2_status}  |  m={ESCALATION_M2}: {m3_status}  ->  {verdict}")
+                    print(f"  {desc}  [sub-proportion check]")
+                    print(f"    m={args.m}: FAIL ({b_summary})  |  "
+                          f"m={ESCALATION_M1}: {m2_status} ({m2_summary})  |  "
+                          f"m={ESCALATION_M2}: {m3_status} ({m3_summary})  ->  {verdict}")
 
                     escalation_map[(test_idx, sub_idx)] = {
-                        "baseline": b_row,
+                        "baseline":   b_pseudo,
                         "baseline_m": args.m,
-                        "m200": m200_row,
-                        "m300": m300_row,
-                        "verdict": verdict,
-                        "is_multi_proportion": False,
+                        "m200":       m200_pseudo,
+                        "m300":       m300_pseudo,
+                        "verdict":    verdict,
+                        "is_multi_proportion": True,
+                        "baseline_summary":    b_summary,
+                        "m200_summary":        m2_summary,
+                        "m300_summary":        m3_summary,
                     }
+                else:
+                    # ── Standard per-sub-row escalation ──────────────────────────
+                    for sub_idx in sub_indices:
+                        b_row   = lookup_row(baseline_results, test_idx, sub_idx)
+                        m200_row = lookup_row(m200_results, test_idx, sub_idx)
+                        m300_row = lookup_row(m300_results, test_idx, sub_idx)
+
+                        verdict = apply_decision_matrix(b_row, m200_row, m300_row)
+
+                        label = b_row.get("label", "") if b_row else ""
+                        test_name = TEST_NAMES[test_idx]
+                        desc = f"[{test_idx}] {test_name}"
+                        if label:
+                            desc += f" ({label})"
+
+                        b_status = "FAIL"
+                        m2_status = "PASS" if (m200_row and m200_row["overall_pass"]) else "FAIL"
+                        m3_status = "PASS" if (m300_row and m300_row["overall_pass"]) else "FAIL"
+
+                        print(f"  {desc}")
+                        print(f"    m={args.m}: {b_status}  |  m={ESCALATION_M1}: {m2_status}  |  m={ESCALATION_M2}: {m3_status}  ->  {verdict}")
+
+                        escalation_map[(test_idx, sub_idx)] = {
+                            "baseline": b_row,
+                            "baseline_m": args.m,
+                            "m200": m200_row,
+                            "m300": m300_row,
+                            "verdict": verdict,
+                            "is_multi_proportion": False,
+                        }
 
     # ── Display final results ──
     print_results_table(baseline_results, escalation_map)
@@ -1818,4 +1930,3 @@ Report output:
 
 if __name__ == "__main__":
     main()
-
