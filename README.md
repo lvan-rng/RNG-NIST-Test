@@ -12,22 +12,8 @@ Automated script for running the official NIST SP 800-22 Statistical Test Suite 
 
 ---
 
-## Installing NIST STS
+## Link NIST STS
 
-The NIST Statistical Test Suite must be compiled from the official C source. Pre-built packages are not available through standard package managers.
-
-```bash
-# Download from NIST
-wget https://csrc.nist.gov/CSRC/media/Projects/Random-Bit-Generation/documents/sts-2_1_2.zip
-unzip sts-2_1_2.zip
-cd sts-2.1.2
-
-# Compile
-make
-
-# Verify
-./assess --help   # or just ./assess (it will print usage)
-```
 
 The compiled `assess` binary is searched automatically in these locations:
 
@@ -46,7 +32,7 @@ If it is installed elsewhere, pass `--assess-path` at runtime.
 ## Quick Start
 
 ```bash
-python3 nist_analysis.py -n 1000000 -m 100 -i rng_output.bin
+python3 nist_analysis.py -n 1000000 -m 100 -f 1 -i rng_output.bin
 ```
 
 That's it. The script handles all interactive prompts, runs all 15 tests, escalates any failures, and writes a Markdown report automatically.
@@ -62,30 +48,14 @@ That's it. The script handles all interactive prompts, runs all 15 tests, escala
 | Header | None — pure binary data, no headers or metadata |
 | Sequence length `-n` | Default 1,000,000 bits (minimum enforced) |
 | Bitstreams `-m` | Default 100 (minimum enforced) |
+| File Type `-f` | 0 - ASCII / 1 - Binary |
 
 The script validates both the file size and the `-n` / `-m` parameters on startup and exits with an error if any requirement is not met.
 
-### Generating a test file
+File type `f` is required to be specified
 
-If you have an RNG API that outputs raw binary:
-
-```bash
-# Single request
-curl -s -X POST http://localhost:8080/api/v2/rand/binary \
-  -H "Content-Type: application/json" \
-  -d '{"min": 0, "max": 4294967296, "amount": 250000}' \
-  -o rng_output.bin
-
-# Loop to build a larger file
-OUTPUT="rng_4gb.bin"
-for i in $(seq 1 4296); do
-  curl -s -X POST http://localhost:8080/api/v2/rand/binary \
-    -H "Content-Type: application/json" \
-    -d '{"min": 0, "max": 4294967296, "amount": 250000}' \
-    >> "$OUTPUT"
-  echo "Chunk $i / 4296"
-done
-```
+- `-f 0` : ASCII  — file contains a sequence of '0' and '1' characters\n"
+- `-f 1` : Binary — file is raw binary (each byte = 8 bits)\n\n"
 
 ---
 
@@ -344,13 +314,14 @@ The generated Markdown report contains:
 ## Usage
 
 ```
-python3 nist_analysis.py -n <seq_len> -m <bitstreams> -i <input_file> [options]
+python3 nist_analysis.py -n <seq_len> -m <bitstreams> -f <filetype> -i <input_file> [options]
 ```
 
 | Argument | Default | Description |
 |---|---|---|
 | `-n` | `1000000` | Sequence length in bits (minimum 1,000,000) |
 | `-m` | `100` | Number of bitstreams (minimum 100) |
+| `f`  | *(required)* | 0 - ASCII OR 1 - Binary |
 | `-i` | *(required)* | Path to raw binary input file |
 | `--assess-path` | *(auto-detected)* | Path to the NIST STS `assess` binary |
 | `-o / --output` | *(auto-generated)* | Output Markdown report path |
@@ -359,23 +330,23 @@ python3 nist_analysis.py -n <seq_len> -m <bitstreams> -i <input_file> [options]
 
 **Standard run (all defaults):**
 ```bash
-python3 nist_analysis.py -n 1000000 -m 100 -i rng_4gb.bin
+python3 nist_analysis.py -n 1000000 -m 100 -f 1 -i rng_4gb.bin
 ```
 
 **Custom sequence length:**
 ```bash
-python3 nist_analysis.py -n 2000000 -m 100 -i rng_4gb.bin
+python3 nist_analysis.py -n 2000000 -m 100 -f 1  -i rng_4gb.bin
 ```
 
 **Explicit assess binary path:**
 ```bash
-python3 nist_analysis.py -n 1000000 -m 100 -i rng_4gb.bin \
+python3 nist_analysis.py -n 1000000 -m 100 -f 1  -i rng_4gb.bin \
   --assess-path /home/ubuntu/tools/sts-2.1.2/assess
 ```
 
 **Custom report output path:**
 ```bash
-python3 nist_analysis.py -n 1000000 -m 100 -i rng_4gb.bin \
+python3 nist_analysis.py -n 1000000 -m 100 -f 1  -i rng_4gb.bin \
   -o /reports/nist_run_2026.md
 ```
 
