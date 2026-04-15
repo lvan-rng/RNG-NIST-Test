@@ -85,6 +85,54 @@ Format is auto-detected: if `file_size × 8 == 1,000,000` the script passes `-f 
 
 ---
 
+## Reference Command Lines
+
+# data.pi  (ASCII)
+```bash
+python3 nist_analyzer.py \
+    --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
+    -n 1000000 -m 1 -f 0 \
+    -i /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data/data.pi \
+    --test
+```
+
+# data.e  (ASCII)
+```bash
+python3 nist_analyzer.py \
+    --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
+    -n 1000000 -m 1 -f 0 \
+    -i /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data/data.e \
+    --test
+```
+
+# data.sha1  (Binary — 125,000 bytes × 8 = 1,000,000 bits)
+```bash
+python3 nist_analyzer.py \
+    --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
+    -n 1000000 -m 1 -f 1 \
+    -i /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data/data.sha1 \
+    --test
+```
+
+# data.sqrt2  (ASCII)
+```bash
+python3 nist_analyzer.py \
+    --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
+    -n 1000000 -m 1 -f 0 \
+    -i /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data/data.sqrt2 \
+    --test
+```
+
+# data.sqrt3  (ASCII)
+```bash
+python3 nist_analyzer.py \
+    --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
+    -n 1000000 -m 1 -f 0 \
+    -i /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data/data.sqrt3 \
+    --test
+```
+---
+
 ## Output
 
 ### Per-file table
