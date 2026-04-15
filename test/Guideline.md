@@ -8,7 +8,7 @@ Validates `nist_analysis.py` (or any compatible wrapper around the official NIST
 
 For each of the five official NIST reference files the script does three things:
 
-1. **Run `nist_analysis.py`** — invoked as a subprocess with the same arguments a user would provide, plus `--test` to bypass production-mode guards (see [The --test flag](#the---test-flag) below).
+1. **Run `nist_analyzer.py`** — invoked as a subprocess with the same arguments a user would provide, plus `--test` to bypass production-mode guards (see [The --test flag](#the---test-flag) below).
 2. **Read `results.txt`** — after `assess` completes, p-values are read directly from the canonical output path:
    ```
    <assess_dir>/experiments/AlgorithmTesting/<TestName>/results.txt
@@ -25,7 +25,7 @@ The script never deletes or modifies any files or directories. Before each run i
 python3 test_nist_appendix_b.py \
     --assess-path /path/to/sts-2.1.2/assess \
     --data-dir    /path/to/sts-2.1.2/data/  \
-    --script-path /path/to/nist_analysis.py
+    --script-path /path/to/nist_analyzer.py
 ```
 
 ### Arguments
@@ -34,7 +34,7 @@ python3 test_nist_appendix_b.py \
 |---|---|---|
 | `--assess-path` | **Yes** | Full path to the compiled NIST STS `assess` binary |
 | `--data-dir` | No | Directory containing the 5 reference files. Defaults to current directory. |
-| `--script-path` | No | Path to `nist_analysis.py`. Defaults to the file next to the test script. |
+| `--script-path` | No | Path to `nist_analyzer.py`. Defaults to the file next to the test script. |
 
 ### Example (RNG Labs server)
 
@@ -42,7 +42,7 @@ python3 test_nist_appendix_b.py \
 python3 test.py \
     --assess-path /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/assess \
     --data-dir    /home/ubuntu/tools/sts-2.1.2/sts-2.1.2/data   \
-    --script-path nist_analyzer_1.6-beta.py
+    --script-path nist_analyzer.py
 ```
 
 ---
