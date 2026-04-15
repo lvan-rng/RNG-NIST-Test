@@ -1,6 +1,6 @@
 # test_nist_appendix_b.py
 
-Validates `nist_analysis.py` (or any compatible wrapper around the official NIST STS `assess` binary) against the reference p-values published in **Appendix B of NIST SP 800-22 Rev. 1a**.
+Validates `test_nist_analyzer.py` (or any compatible wrapper around the official NIST STS `assess` binary) against the reference p-values published in **Appendix B of NIST SP 800-22 Rev. 1a**.
 
 ---
 
@@ -22,7 +22,7 @@ The script never deletes or modifies any files or directories. Before each run i
 ## Usage
 
 ```bash
-python3 test_nist_appendix_b.py \
+python3 test_nist_analyzer.py \
     --assess-path /path/to/sts-2.1.2/assess \
     --data-dir    /path/to/sts-2.1.2/data/  \
     --script-path /path/to/nist_analyzer.py
