@@ -307,7 +307,8 @@ def validate_inputs(args):
     """Validate all input parameters. Exit on error."""
     errors = []
     warnings = []
-    fmt = getattr(args, 'f', 1)   # default binary if attribute missing
+    fmt = getattr(args, 'f', 1)       # default binary if attribute missing
+    test_mode = getattr(args, 'test', False)
 
     if args.n < MIN_SEQUENCE_LENGTH:
         errors.append(
@@ -315,7 +316,11 @@ def validate_inputs(args):
             f"NIST requires n >= {MIN_SEQUENCE_LENGTH:,} for full-suite execution."
         )
 
-    if fmt == 1:
+    if test_mode:
+        # --test bypasses the m restriction entirely (e.g. m=1 for Appendix B validation)
+        if args.m < 1:
+            errors.append("Number of bitstreams m must be at least 1.")
+    elif fmt == 1:
         # Binary mode: enforce minimum bitstreams for statistically stable reporting
         if args.m < MIN_BITSTREAMS:
             errors.append(
@@ -341,7 +346,8 @@ def validate_inputs(args):
 
         if fmt == 1:
             # Binary: each byte = 8 bits
-            if file_size < MIN_FILE_SIZE_BYTES:
+            # Skip the production-size floor in --test mode (reference files are small)
+            if not test_mode and file_size < MIN_FILE_SIZE_BYTES:
                 errors.append(
                     f"Input file size {file_size_mb:.1f} MB is below minimum {MIN_FILE_SIZE_MB} MB. "
                     f"File: {args.i}"
@@ -359,7 +365,8 @@ def validate_inputs(args):
             )
 
         # Escalation capacity check only applies to binary production runs
-        if fmt == 1:
+        # (not in --test mode, which deliberately uses small reference files)
+        if fmt == 1 and not test_mode:
             escalation_bits = args.n * ESCALATION_M2
             if total_bits_available < escalation_bits:
                 errors.append(
@@ -686,6 +693,40 @@ def parse_report(assess_dir):
     return rows
 
 
+def find_nonoverlay_template_index(assess_dir, template="000000001"):
+    """
+    Return the 0-based line index (= results.txt row) for a specific bit template
+    inside the NIST STS templates/template9 file.
+
+    File format (NIST STS 2.1.2):
+        148            ← first line: count of templates
+        9 000000001    ← template length + bit pattern (one per line)
+        9 000000011
+        ...
+
+    The p-values in NonOverlappingTemplate/results.txt are written in the same
+    order as templates in this file, so the 0-based template position equals the
+    0-based index into results.txt.
+
+    Returns 0 as the fallback if the file does not exist or the template is not
+    found (the standard NIST STS 2.1.2 distribution always has "000000001" first).
+    """
+    template_path = os.path.join(assess_dir, "templates", "template9")
+    if not os.path.isfile(template_path):
+        return 0
+    try:
+        with open(template_path, "r") as fh:
+            lines = fh.readlines()
+        # First line is the count header; templates begin on line index 1
+        for i, line in enumerate(lines[1:]):
+            parts = line.strip().split()
+            if parts and parts[-1] == template:
+                return i   # i is already 0-based within the template list
+    except OSError:
+        pass
+    return 0  # fallback: template not found, assume index 0
+
+
 def read_per_stream_pvalues(assess_dir):
     """
     Read per-stream test p-values from NIST STS individual test result files.
@@ -699,11 +740,13 @@ def read_per_stream_pvalues(assess_dir):
     holds the chi-squared uniformity value across m streams (degenerate for
     m=1).  For m=1 validation against Appendix B, always use this function.
 
-    Parsing patterns (common to all 15 NIST STS tests):
-      "p_value = X.XXXXXX"           most tests
-      "p_value1 = X.XXXXXX"          Serial test (first p-value)
-      "p_value2 = X.XXXXXX"          Serial test (second p-value)
-      "x = N   p_value = X.XXXXXX"   RandomExcursions / RandomExcursionsVariant
+    Parsing format (NIST STS sts-2.1.2 results.txt):
+      Each line contains one raw p-value printed with %f (e.g. "0.578011").
+      Multi-value tests write one p-value per line:
+        CumulativeSums : 2 lines (forward, reverse)
+        Serial         : 2 lines (psi^2_m, psi^2_{m-1})
+        RandomExcursions        : 8 lines  (x = -4...-1, +1...+4)
+        RandomExcursionsVariant : 18 lines (x = -9...-1, +1...+9)
 
     Returns a dict keyed by test directory name (from TEST_DIRS):
       { "Frequency": [0.578011], "CumulativeSums": [0.628308, 0.663369], ... }
@@ -722,9 +765,12 @@ def read_per_stream_pvalues(assess_dir):
         pvalues = []
         with open(results_path, "r") as f:
             for line in f:
-                m = re.search(
-                    r'p_value\d*\s*=\s*([0-9.]+(?:e[+-]?\d+)?)',
-                    line, re.IGNORECASE
+                # NIST STS results.txt format: one raw float per line ("0.578011")
+                # Match lines that are purely a floating-point number (with
+                # optional whitespace), ignoring any non-numeric lines.
+                m = re.match(
+                    r'^\s*([0-9]+\.[0-9]+(?:[eE][+-]?\d+)?)\s*$',
+                    line
                 )
                 if m:
                     try:
@@ -733,7 +779,19 @@ def read_per_stream_pvalues(assess_dir):
                         pass
 
         if pvalues:
-            result[test_dir] = pvalues
+            # For NonOverlappingTemplate, results.txt contains 148 p-values (one
+            # per template in templates/template9).  Appendix B documents the
+            # p-value for template B="000000001" specifically.  Locate that
+            # template's position in the templates file and expose only that
+            # single value at index 0 so the --test comparison is unambiguous.
+            if test_dir == "NonOverlappingTemplate":
+                tmpl_idx = find_nonoverlay_template_index(assess_dir)
+                if tmpl_idx < len(pvalues):
+                    result[test_dir] = [pvalues[tmpl_idx]]
+                else:
+                    result[test_dir] = [pvalues[0]]
+            else:
+                result[test_dir] = pvalues
 
     return result
 
@@ -1667,9 +1725,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s -n 1000000 -m 100 -i rng_4gb.bin
-  %(prog)s -n 1000000 -m 100 -i rng_4gb.bin --assess-path /usr/local/bin/assess
-  %(prog)s -n 2000000 -m 100 -i rng_4gb.bin -o report.md
+  %(prog)s -f 1 -n 1000000 -m 100 -i rng_4gb.bin
+  %(prog)s -f 1 -n 1000000 -m 100 -i rng_4gb.bin --assess-path /usr/local/bin/assess
+  %(prog)s -f 1 -n 2000000 -m 100 -i rng_4gb.bin -o report.md
+  %(prog)s -f 0 -n 1000000 -m 1  -i data.pi --test
+
+  -f 0  ASCII  — input file contains a sequence of '0' and '1' characters
+  -f 1  Binary — input file is raw binary (each byte = 8 bits)
+
+  --test  Bypass m >= 100 restriction and print per-stream p-values for
+          Appendix B validation (used by test_nist_appendix_b.py).
 
 Report output:
   All reports are saved to <input_filename>-report/ in the current directory.
@@ -1691,6 +1756,9 @@ Report output:
                         help="Path to the NIST STS assess binary")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Output Markdown report path (default: nist_report_<timestamp>.md)")
+    parser.add_argument("--test", action="store_true", default=False,
+                        help="Test mode: bypass the m >= 100 restriction and print "
+                             "per-stream p-values for Appendix B validation")
 
     args = parser.parse_args()
 
@@ -1760,6 +1828,21 @@ Report output:
 
     # Show NIST's own output for Phase 1 (replaces our custom 15-test table)
     print_nist_raw_report(assess_dir)
+
+    # In test mode: print per-stream p-values from individual results.txt files, then exit.
+    # For m=1 the P-VALUE column in finalAnalysisReport.txt is "----" (chi-squared
+    # uniformity is undefined for 1 observation).  The actual per-test p-values —
+    # the ones documented in NIST SP 800-22 Appendix B — are written by each test
+    # to its own results.txt file under experiments/AlgorithmTesting/<TestDir>/.
+    if args.test:
+        pvalues = read_per_stream_pvalues(assess_dir)
+        print()
+        print("--- APPENDIX B P-VALUES ---")
+        for test_dir, vals in pvalues.items():
+            for i, pv in enumerate(vals):
+                print(f"PVALUE: {test_dir}[{i}]={pv:.6f}")
+        print("--- END ---")
+        sys.exit(0)
 
     # Check for failures
     failing = find_failing_rows(baseline_results)
